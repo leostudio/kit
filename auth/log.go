@@ -1,4 +1,4 @@
-package rabbitmq
+package auth
 
 import (
 	"github.com/leostudio/kit/log"

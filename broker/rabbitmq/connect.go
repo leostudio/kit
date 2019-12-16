@@ -2,6 +2,7 @@ package rabbitmq
 
 import (
 	"github.com/streadway/amqp"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -15,11 +16,57 @@ const (
 // Connection amqp.Connection wrapper
 type Connection struct {
 	*amqp.Connection
+	m sync.RWMutex
+}
+
+// Dial wrap amqp.Dial, dial and get a reconnect connection
+func Dial(url string) (*Connection, error) {
+	conn, err := amqp.Dial(url)
+	if err != nil {
+		return nil, err
+	}
+
+	connection := &Connection{
+		Connection: conn,
+	}
+
+	go func() {
+		for {
+			reason, ok := <-connection.Connection.NotifyClose(make(chan *amqp.Error))
+			// exit this goroutine if closed by developer
+			if !ok {
+				logger.Info("connection closed")
+				break
+			}
+			logger.Infof("connection closed, reason: %v", reason)
+
+			connection.m.Lock()
+			// reconnect if not closed by developer
+			for {
+				// wait 1s for reconnect
+				time.Sleep(connectionReconnectDelay * time.Second)
+
+				conn, err := amqp.Dial(url)
+				if err == nil {
+					connection.Connection = conn
+					logger.Info("reconnect success")
+					connection.m.Unlock()
+					break
+				}
+
+				logger.Errorf("reconnect error: %v", err)
+			}
+		}
+	}()
+
+	return connection, nil
 }
 
 // Channel wrap amqp.Connection.Channel, get a auto reconnect channel
 func (c *Connection) Channel(reconnect bool) (*Channel, error) {
-	ch, err := channel(c.Connection)
+	c.m.RLock()
+	ch, err := c.Connection.Channel()
+	c.m.RUnlock()
 	if err != nil {
 		return nil, err
 	}
@@ -34,26 +81,30 @@ func (c *Connection) Channel(reconnect bool) (*Channel, error) {
 				reason, ok := <-resultChannel.Channel.NotifyClose(make(chan *amqp.Error))
 				// exit this goroutine if closed by developer
 				if !ok || resultChannel.IsClosed() {
-					logger.Print("channel closed")
+					logger.Info("channel closed")
 					if err := resultChannel.Close(); err != nil { // close again, ensure closed flag set when connection closed
-						logger.Printf("Channel.Close error: %v", err)
+						logger.Errorf("Channel.Close error: %v", err)
 					}
 					break
 				}
-				logger.Printf("channel closed, reason: %v", reason)
+				logger.Infof("channel closed, reason: %v", reason)
 
+				resultChannel.m.Lock()
 				// reconnect if not closed by developer
 				for {
 					// wait 1s for connection reconnect
 					time.Sleep(channelReconnectDelay * time.Second)
 
-					ch, err := channel(c.Connection)
+					c.m.RLock()
+					ch, err := c.Connection.Channel()
+					c.m.RUnlock()
 					if err == nil {
-						logger.Print("channel recreate success")
+						logger.Info("channel recreate success")
 						resultChannel.Channel = ch
+						resultChannel.m.Unlock()
 						break
 					}
-					logger.Printf("channel recreate failed, err: %v", err)
+					logger.Errorf("channel recreate error: %v", err)
 				}
 			}
 		}()
@@ -62,51 +113,11 @@ func (c *Connection) Channel(reconnect bool) (*Channel, error) {
 	return resultChannel, nil
 }
 
-// Dial wrap amqp.Dial, dial and get a reconnect connection
-func Dial(url string) (*Connection, error) {
-	conn, err := dial(url)
-	if err != nil {
-		return nil, err
-	}
-
-	connection := &Connection{
-		Connection: conn,
-	}
-
-	go func() {
-		for {
-			reason, ok := <-connection.Connection.NotifyClose(make(chan *amqp.Error))
-			// exit this goroutine if closed by developer
-			if !ok {
-				logger.Print("connection closed")
-				break
-			}
-			logger.Printf("connection closed, reason: %v", reason)
-
-			// reconnect if not closed by developer
-			for {
-				// wait 1s for reconnect
-				time.Sleep(connectionReconnectDelay * time.Second)
-
-				conn, err := dial(url)
-				if err == nil {
-					connection.Connection = conn
-					logger.Print("reconnect success")
-					break
-				}
-
-				logger.Printf("reconnect failed, err: %v", err)
-			}
-		}
-	}()
-
-	return connection, nil
-}
-
 // Channel amqp.Channel wrapper
 type Channel struct {
 	*amqp.Channel
 	closed int32
+	m      sync.RWMutex
 }
 
 // IsClosed indicate closed by developer
@@ -131,9 +142,11 @@ func (ch *Channel) Consume(queue, consumer string, autoAck, exclusive, noLocal, 
 
 	go func() {
 		for {
+			ch.m.RLock()
 			d, err := ch.Channel.Consume(queue, consumer, autoAck, exclusive, noLocal, noWait, args)
+			ch.m.RUnlock()
 			if err != nil {
-				logger.Printf("consume failed, err: %v", err)
+				logger.Errorf("consume error: %v", err)
 				time.Sleep(consumeRetryDelay * time.Second)
 				continue
 			}
