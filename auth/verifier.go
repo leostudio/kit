@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"errors"
+	"github.com/caarlos0/env/v6"
 	"github.com/dgrijalva/jwt-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -134,12 +135,12 @@ func NewVerifier(opts ...VerifierOption) (Verifier, error) {
 	options := &VerifierOptions{
 		ExcludeMethods: make([]string, 0),
 	}
-	cfg, err := LoadConfig()
-	if err != nil {
+	cfg := new(VerifierConfig)
+	if err := env.Parse(cfg); err != nil {
 		return nil, err
 	}
 
-	options.RSAPublicKeyPath = cfg.Verifier.RSAPublicKeyPath
+	options.RSAPublicKeyPath = cfg.RSAPublicKeyPath
 
 	for _, o := range opts {
 		o(options)

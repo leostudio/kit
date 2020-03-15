@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"github.com/caarlos0/env/v6"
 	"github.com/go-redis/redis"
 	"time"
 )
@@ -34,25 +35,25 @@ func WithPrefix(prefix string) RedisBlacklistOption {
 }
 
 func NewRedisCliFromConfig() *redis.Client {
-	cfg, err := LoadConfig()
-	if err != nil {
-		logger.Fatalf("LoadConfig error: %v", err)
+	cfg := new(BlackListConfig)
+	if err := env.Parse(cfg); err != nil {
+		logger.Fatalf("env.Parse error: %v", err)
 	}
 	return redis.NewClient(&redis.Options{
-		Addr:        cfg.BlackList.Addr,
-		Password:    cfg.BlackList.Password,
-		DB:          cfg.BlackList.DB,
-		IdleTimeout: cfg.BlackList.IdleTimeout,
+		Addr:        cfg.Addr,
+		Password:    cfg.Password,
+		DB:          cfg.DB,
+		IdleTimeout: cfg.IdleTimeout,
 	})
 }
 
 func NewRedisBlacklist(cmdable redis.Cmdable, opts ...RedisBlacklistOption) Blacklist {
 	options := new(RedisBlacklistOptions)
-	cfg, err := LoadConfig()
-	if err != nil {
-		logger.Fatalf("config.LoadConfig error: %v", err)
+	cfg := new(BlackListConfig)
+	if err := env.Parse(cfg); err != nil {
+		logger.Fatalf("env.Parse error: %v", err)
 	}
-	options.Prefix = cfg.BlackList.Prefix
+	options.Prefix = cfg.Prefix
 
 	for _, opt := range opts {
 		opt(options)
