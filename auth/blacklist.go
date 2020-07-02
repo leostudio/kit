@@ -3,7 +3,6 @@ package auth
 import (
 	"errors"
 	"fmt"
-	"github.com/caarlos0/env/v6"
 	"github.com/go-redis/redis"
 	"time"
 )
@@ -23,37 +22,21 @@ type RedisBlacklistOptions struct {
 
 type RedisBlacklistOption func(opts *RedisBlacklistOptions)
 
-type redisBlacklist struct {
-	prefix string
-	cli    redis.Cmdable
-}
-
 func WithPrefix(prefix string) RedisBlacklistOption {
 	return func(opts *RedisBlacklistOptions) {
 		opts.Prefix = prefix
 	}
 }
 
-func NewRedisCliFromConfig() *redis.Client {
-	cfg := new(BlackListConfig)
-	if err := env.Parse(cfg); err != nil {
-		logger.Fatalf("env.Parse error: %v", err)
-	}
-	return redis.NewClient(&redis.Options{
-		Addr:        cfg.Addr,
-		Password:    cfg.Password,
-		DB:          cfg.DB,
-		IdleTimeout: cfg.IdleTimeout,
-	})
+type redisBlacklist struct {
+	prefix string
+	cli    redis.Cmdable
 }
 
 func NewRedisBlacklist(cmdable redis.Cmdable, opts ...RedisBlacklistOption) Blacklist {
-	options := new(RedisBlacklistOptions)
-	cfg := new(BlackListConfig)
-	if err := env.Parse(cfg); err != nil {
-		logger.Fatalf("env.Parse error: %v", err)
+	options := &RedisBlacklistOptions{
+		Prefix: "token:blacklist:",
 	}
-	options.Prefix = cfg.Prefix
 
 	for _, opt := range opts {
 		opt(options)

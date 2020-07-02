@@ -2,9 +2,10 @@ package rabbitmq
 
 import (
 	"errors"
+	"go.uber.org/zap"
 
-	"github.com/leostudio/kit/broker"
 	"github.com/golang/protobuf/proto"
+	"github.com/leostudio/kit/broker"
 	"github.com/streadway/amqp"
 )
 
@@ -54,11 +55,18 @@ func (rp *rabbitPublisher) Publish(m interface{}) error {
 	if !ok {
 		return ErrMessageIsNotProtoMessage
 	}
-	return rp.doPublish(rp.topic, msg)
+	return rp.PublishMessage(&broker.Message{
+		Topic: rp.topic,
+		Value: msg,
+	})
 }
 
 func (rp *rabbitPublisher) PublishMessage(msg *broker.Message) error {
-	return rp.doPublish(msg.Topic, msg.Value)
+	if err := rp.doPublish(msg.Topic, msg.Value); err != nil {
+		log.Error("publish message error", zap.Error(err), zap.String("topic", msg.Topic), zap.Reflect("value", msg.Value))
+		return err
+	}
+	return nil
 }
 
 func (rp *rabbitPublisher) doPublish(topic string, msg proto.Message) error {
@@ -91,7 +99,7 @@ func (rp *rabbitPublisher) doPublish(topic string, msg proto.Message) error {
 		go func() {
 			r, ok := <-returnCh
 			if ok {
-				logger.Errorf("message return: %+v", r)
+				log.Error("message return", zap.Reflect("return", r))
 			}
 		}()
 

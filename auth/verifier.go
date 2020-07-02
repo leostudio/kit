@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/rsa"
 	"errors"
-	"github.com/caarlos0/env/v6"
 	"github.com/dgrijalva/jwt-go"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -29,18 +29,11 @@ type Verifier interface {
 }
 
 type VerifierOptions struct {
-	RSAPublicKeyPath string
-	ExcludeMethods   []string
-	TokenBlacklist   Blacklist
+	ExcludeMethods []string
+	TokenBlacklist Blacklist
 }
 
 type VerifierOption func(opts *VerifierOptions)
-
-func RSAPublicKeyPath(path string) VerifierOption {
-	return func(opts *VerifierOptions) {
-		opts.RSAPublicKeyPath = path
-	}
-}
 
 func ExcludeMethods(method ...string) VerifierOption {
 	return func(opts *VerifierOptions) {
@@ -54,6 +47,41 @@ func TokenBlacklist(bl Blacklist) VerifierOption {
 	}
 }
 
+func NewVerifier(publicKeyPath string, opts ...VerifierOption) (Verifier, error) {
+	rawKey, err := ioutil.ReadFile(publicKeyPath)
+	if err != nil {
+		return nil, err
+	}
+
+	key, err := jwt.ParseRSAPublicKeyFromPEM(rawKey)
+
+	// default
+	options := &VerifierOptions{
+		ExcludeMethods: []string{`/.+Internal.+/.+`, `/grpc\.health\.v1\.Health/Check`},
+	}
+
+	for _, o := range opts {
+		o(options)
+	}
+
+	excludePatterns := make([]*regexp.Regexp, len(options.ExcludeMethods))
+	for i, m := range options.ExcludeMethods {
+		r, err := regexp.Compile(m)
+		if err != nil {
+			log.Error("invalid method pattern error", zap.Error(err))
+			return nil, err
+		}
+		excludePatterns[i] = r
+	}
+
+	return &verifier{
+		rawKey:          rawKey,
+		key:             key,
+		excludePatterns: excludePatterns,
+		blacklist:       options.TokenBlacklist,
+	}, nil
+}
+
 type verifier struct {
 	rawKey          []byte
 	key             *rsa.PublicKey
@@ -62,6 +90,14 @@ type verifier struct {
 }
 
 func (p *verifier) Verify(tokenString string) (*jwt.Token, error) {
+	if p.blacklist != nil {
+		if err := p.blacklist.CheckAccess(tokenString); err != nil {
+			if errors.Is(err, ErrExpiredAccess) {
+				return nil, ErrInvalidToken
+			}
+			return nil, err
+		}
+	}
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		return p.key, nil
 	})
@@ -98,15 +134,6 @@ func (p *verifier) VerifyContext(ctx context.Context) (context.Context, error) {
 		return nil, err
 	}
 
-	if p.blacklist != nil {
-		if err := p.blacklist.CheckAccess(tokenString); err != nil {
-			if errors.Is(err, ErrExpiredAccess) {
-				return nil, ErrInvalidToken
-			}
-			return nil, err
-		}
-	}
-
 	token, err := p.Verify(tokenString)
 	if err != nil {
 		return nil, ErrInvalidToken
@@ -114,7 +141,7 @@ func (p *verifier) VerifyContext(ctx context.Context) (context.Context, error) {
 
 	claim, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		logger.Infof("invalid claim %+v", token.Claims)
+		log.Info("invalid claim", zap.Reflect("claims", token.Claims))
 		return nil, ErrInvalidClaim
 	}
 
@@ -128,45 +155,4 @@ func (p *verifier) matchMethod(method string) bool {
 		}
 	}
 	return false
-}
-
-func NewVerifier(opts ...VerifierOption) (Verifier, error) {
-	// default
-	options := &VerifierOptions{
-		ExcludeMethods: make([]string, 0),
-	}
-	cfg := new(VerifierConfig)
-	if err := env.Parse(cfg); err != nil {
-		return nil, err
-	}
-
-	options.RSAPublicKeyPath = cfg.RSAPublicKeyPath
-
-	for _, o := range opts {
-		o(options)
-	}
-
-	rawKey, err := ioutil.ReadFile(options.RSAPublicKeyPath)
-	if err != nil {
-		return nil, err
-	}
-
-	key, err := jwt.ParseRSAPublicKeyFromPEM(rawKey)
-
-	excludePatterns := make([]*regexp.Regexp, len(options.ExcludeMethods))
-	for i, m := range options.ExcludeMethods {
-		r, err := regexp.Compile(m)
-		if err != nil {
-			logger.Errorf("error: invalid method pattern: %v", err)
-			return nil, err
-		}
-		excludePatterns[i] = r
-	}
-
-	return &verifier{
-		rawKey:          rawKey,
-		key:             key,
-		excludePatterns: excludePatterns,
-		blacklist:       options.TokenBlacklist,
-	}, nil
 }

@@ -3,34 +3,40 @@ package rabbitmq
 
 import (
 	"fmt"
-	"regexp"
-	"time"
-
 	"github.com/leostudio/kit/broker"
 	"github.com/streadway/amqp"
+	"go.uber.org/zap"
+	"regexp"
+	"time"
 )
 
 var (
 	rabbitUrlRegex = regexp.MustCompile(`^amqp(s)?://.+`)
 )
 
-type Option func(cfg *Config)
-
-func WithAddr(addr string) Option {
-	return func(cfg *Config) {
-		cfg.URL = addr
-	}
+type Options struct {
+	DLX       string
+	ALT       string
+	NackDelay time.Duration
 }
 
-func WithExchange(exchange string) Option {
-	return func(cfg *Config) {
-		cfg.Exchange = exchange
-	}
-}
+type Option func(opts *Options)
 
 func WithDLX(dlx string) Option {
-	return func(cfg *Config) {
+	return func(cfg *Options) {
 		cfg.DLX = dlx
+	}
+}
+
+func WithALT(alt string) Option {
+	return func(cfg *Options) {
+		cfg.ALT = alt
+	}
+}
+
+func WithNackDelay(delay time.Duration) Option {
+	return func(cfg *Options) {
+		cfg.NackDelay = delay
 	}
 }
 
@@ -42,46 +48,24 @@ type rabbitBroker struct {
 	nackDelay time.Duration
 }
 
-func NewRabbitMQBroker(opts ...Option) broker.Broker {
-	cfg := new(Config)
+func NewRabbitMQBroker(url, exchange string, opts ...Option) broker.Broker {
+	options := &Options{
+		NackDelay: 5 * time.Second,
+	}
 	for _, o := range opts {
-		o(cfg)
+		o(options)
 	}
 
-	if !rabbitUrlRegex.MatchString(cfg.URL) {
-		logger.Fatalf("invalid RabbitMQ url: %s", cfg.URL)
+	if !rabbitUrlRegex.MatchString(url) {
+		log.Fatal("invalid RabbitMQ url", zap.String("url", url))
 	}
 
 	out := &rabbitBroker{
-		url:       cfg.URL,
-		exchange:  cfg.Exchange,
-		dlx:       cfg.DLX,
-		alt:       cfg.ALT,
-		nackDelay: cfg.NackDelay,
-	}
-
-	out.init()
-
-	return out
-}
-
-func NewRabbitMQBrokerFromConfig(opts ...Option) broker.Broker {
-	cfg, _ := LoadConfig()
-
-	for _, o := range opts {
-		o(cfg)
-	}
-
-	if !rabbitUrlRegex.MatchString(cfg.URL) {
-		logger.Fatalf("invalid RabbitMQ url: %s", cfg.URL)
-	}
-
-	out := &rabbitBroker{
-		url:       cfg.URL,
-		exchange:  cfg.Exchange,
-		dlx:       cfg.DLX,
-		alt:       cfg.ALT,
-		nackDelay: cfg.NackDelay,
+		url:       url,
+		exchange:  exchange,
+		dlx:       options.DLX,
+		alt:       options.ALT,
+		nackDelay: options.NackDelay,
 	}
 
 	out.init()
@@ -92,31 +76,25 @@ func NewRabbitMQBrokerFromConfig(opts ...Option) broker.Broker {
 func (r *rabbitBroker) init() {
 	conn, err := amqp.Dial(r.url)
 	if err != nil {
-		logger.Fatalf("amqp.Dial error: %v", err)
+		log.Fatal("amqp.Dial error", zap.Error(err))
 	}
 	defer conn.Close()
 
 	ch, err := conn.Channel()
 	if err != nil {
-		logger.Fatalf("conn.Channel error: %v", err)
+		log.Fatal("conn.Channel error", zap.Error(err))
 	}
 	defer ch.Close()
 
 	if r.dlx != "" {
-		if err := topicExchangeDeclare(r.dlx, nil, ch); err != nil {
-			logger.Fatalf("topicExchangeDeclare %s error: %v", r.dlx, err)
-		}
+		mustTopicExchangeDeclare(r.dlx, nil, ch)
 	}
 	var exchangeArgs amqp.Table
 	if r.alt != "" {
-		if err := topicExchangeDeclare(r.alt, nil, ch); err != nil {
-			logger.Fatalf("topicExchangeDeclare %s error: %v", r.alt, err)
-		}
+		mustTopicExchangeDeclare(r.alt, nil, ch)
 		exchangeArgs = amqp.Table{"alternate-exchange": r.alt}
 	}
-	if err := topicExchangeDeclare(r.exchange, exchangeArgs, ch); err != nil {
-		logger.Fatalf("topicExchangeDeclare %s error: %v", r.exchange, err)
-	}
+	mustTopicExchangeDeclare(r.exchange, exchangeArgs, ch)
 }
 
 func (r *rabbitBroker) TopicPublisher(topic string, opts ...broker.Option) (broker.Publisher, error) {
@@ -213,14 +191,5 @@ func (r *rabbitBroker) Subscribe(name, topic string, reliable, requeue bool, han
 		return r.RegisterSubscribeHandler(name, topic, handler, broker.Reliable(), broker.MaxRetry(maxRetry))
 	} else {
 		return r.RegisterSubscribeHandler(name, topic, handler)
-	}
-}
-
-// Deprecated. use NewRabbitMQBroker instead
-func NewBroker(args ...string) broker.Broker {
-	if len(args) > 0 {
-		return NewRabbitMQBroker(WithAddr(args[0]))
-	} else {
-		return NewRabbitMQBroker()
 	}
 }

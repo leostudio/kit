@@ -1,7 +1,7 @@
 package auth
 
 import (
-	"github.com/leostudio/kit/log"
+	"github.com/leostudio/kit/mlog"
 )
 
-var logger = log.Logger()
+var log = mlog.Logger("auth")

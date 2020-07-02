@@ -1,9 +1,8 @@
 package rabbitmq
 
 import (
+	"github.com/leostudio/kit/util"
 	"time"
-
-	"github.com/caarlos0/env/v6"
 )
 
 type Config struct {
@@ -14,10 +13,8 @@ type Config struct {
 	NackDelay time.Duration `env:"RABBIT_NACK_DELAY" envDefault:"5s"`
 }
 
-func LoadConfig() (*Config, error) {
+func MustLoadConfig() *Config {
 	out := new(Config)
-	if err := env.Parse(out); err != nil {
-		return nil, err
-	}
-	return out, nil
+	util.MustLoadConfig(out)
+	return out
 }
